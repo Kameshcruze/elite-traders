@@ -1,0 +1,6 @@
+{
+  "name": "Elite Traders",
+  "description": "Premium one-product eCommerce landing page designed for testing Razorpay payments and Supabase database synchronization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
