@@ -57,12 +57,31 @@ export default function App() {
   const [supabaseStatus, setSupabaseStatus] = useState<{ connected: boolean; error: string | null }>({ connected: true, error: null });
   const [showSqlGuide, setShowSqlGuide] = useState(false);
 
-  // Fetch orders logged in database
-  const fetchOrders = async () => {
+  // Admin Verification States
+  const [adminPassword, setAdminPassword] = useState<string>(() => {
+    return localStorage.getItem("elite_admin_password") || "";
+  });
+  const [enteredUsername, setEnteredUsername] = useState<string>("");
+  const [isLoggedAdmin, setIsLoggedAdmin] = useState<boolean>(() => {
+    return localStorage.getItem("elite_admin_logged") === "true";
+  });
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [checkingLogin, setCheckingLogin] = useState(false);
+
+  // Fetch orders logged in database (Secured via header token)
+  const fetchOrders = async (pwd: string = adminPassword) => {
+    if (!pwd) return;
     try {
       setLoadingOrders(true);
       setOrderQueryError(null);
-      const res = await fetch("/api/orders");
+      const res = await fetch("/api/orders", {
+        headers: {
+          "Authorization": `Bearer ${pwd}`
+        }
+      });
+      if (res.status === 401) {
+        throw new Error("Invalid admin authorization credentials");
+      }
       if (!res.ok) {
         throw new Error(`HTTP status error: ${res.status}`);
       }
@@ -80,18 +99,87 @@ export default function App() {
     } catch (err: any) {
       console.error("Error reading live DB:", err);
       setOrderQueryError(err.message || "Failed to load logged transactions");
-      setSupabaseStatus({ connected: false, error: err.message || "Network API exception" });
+      if (err.message && err.message.includes("Invalid admin")) {
+        handleAdminLogout();
+      } else {
+        setSupabaseStatus({ connected: false, error: err.message || "Network API exception" });
+      }
     } finally {
       setLoadingOrders(false);
     }
   };
 
-  // Run initial fetch
+  // Secure validation handler for checking Admin Credentials
+  const handleAdminLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoginError(null);
+    setCheckingLogin(true);
+
+    if (!enteredUsername || !adminPassword) {
+      setLoginError("Please enter both administrative username and access password.");
+      setCheckingLogin(false);
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/orders", {
+        headers: {
+          "Authorization": `Bearer ${adminPassword}`
+        }
+      });
+
+      if (res.status === 401 || res.status === 403) {
+        throw new Error("Invalid admin access credentials. Access Denied.");
+      }
+
+      if (!res.ok) {
+        throw new Error(`Verification request returned status ${res.status}`);
+      }
+
+      // If authorized, save the state securely
+      localStorage.setItem("elite_admin_password", adminPassword);
+      localStorage.setItem("elite_admin_logged", "true");
+      setIsLoggedAdmin(true);
+      
+      const data = await res.json();
+      if (data && typeof data === "object" && "orders" in data) {
+        setOrders(data.orders);
+        setSupabaseStatus({
+          connected: data.supabaseConnected !== false,
+          error: data.supabaseError || null
+        });
+      } else {
+        setOrders(Array.isArray(data) ? data : []);
+      }
+    } catch (err: any) {
+      console.error("Verification error:", err);
+      setLoginError(err.message || "Login authentication failed due to server error.");
+    } finally {
+      setCheckingLogin(false);
+    }
+  };
+
+  // Clear credentials on logout
+  const handleAdminLogout = () => {
+    localStorage.removeItem("elite_admin_password");
+    localStorage.removeItem("elite_admin_logged");
+    setAdminPassword("");
+    setEnteredUsername("");
+    setIsLoggedAdmin(false);
+    setOrders([]);
+    setLoginError(null);
+  };
+
+  // Run initial fetch and periodic syncing ONLY if logged in
   useEffect(() => {
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 10000); // Poll every 10 seconds for real-time comfort
-    return () => clearInterval(interval);
-  }, []);
+    if (isLoggedAdmin && adminPassword) {
+      fetchOrders(adminPassword);
+      const interval = setInterval(() => {
+        fetchOrders(adminPassword);
+      }, 10000); // Poll every 10 seconds securely for verified admins only
+      return () => clearInterval(interval);
+    }
+  }, [isLoggedAdmin, adminPassword]);
 
   // Cart actions
   const handleAddToCart = () => {
@@ -919,156 +1007,243 @@ export default function App() {
       <section id="supabase-inspector" className="bg-slate-900 text-slate-100 border-t border-slate-800 py-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6 mb-8 gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="bg-indigo-500/20 text-indigo-400 text-xs font-bold tracking-widest uppercase px-2.5 py-0.5 border border-indigo-500/30 rounded">
-                  Developer Sandbox Console
-                </span>
-                <span className="h-2 w-2 bg-emerald-500 rounded-full animate-pulse" title="System synchronizer active"></span>
-              </div>
-              <h2 className="text-2xl font-extrabold tracking-tight mt-2 flex items-center gap-2">
-                <Database className="w-6 h-6 text-indigo-400" />
-                Supabase: "orders" Table Live Stream
-              </h2>
-              <p className="text-slate-400 text-xs mt-1">
-                This query reads the records logged in your table directly so you can trace your testing progress.
-              </p>
-            </div>
-
-            <button
-              onClick={fetchOrders}
-              disabled={loadingOrders}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 transition-all flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${loadingOrders ? "animate-spin" : ""}`} />
-              Manual Sync Log
-            </button>
-          </div>
-
-          {/* RESILIENT DATABASE inspector VIEWS */}
-          {!supabaseStatus.connected && (
-            <div className="bg-amber-950/30 border border-amber-500/20 rounded-xl p-5 mb-8 text-sm text-amber-200">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
-                <div className="flex-grow">
-                  <p className="font-bold text-amber-300 flex items-center gap-1.5 text-base">
-                    <Database className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />
-                    Supabase Table Connection Notice
+          {isLoggedAdmin ? (
+            <>
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-800 pb-6 mb-8 gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="bg-indigo-500/20 text-indigo-400 text-xs font-bold tracking-widest uppercase px-2.5 py-0.5 border border-indigo-500/30 rounded">
+                      Developer Sandbox Console
+                    </span>
+                    <span className="h-2 w-2 bg-emerald-500 rounded-full animate-pulse" title="System synchronizer active"></span>
+                  </div>
+                  <h2 className="text-2xl font-extrabold tracking-tight mt-2 flex items-center gap-2">
+                    <Database className="w-6 h-6 text-indigo-400" />
+                    Supabase: "orders" Table Live Stream
+                  </h2>
+                  <p className="text-slate-400 text-xs mt-1">
+                    Authenticated Admin Session. This query reads the records logged in your table directly.
                   </p>
-                  <p className="text-xs text-amber-200/80 mt-1 leading-relaxed">
-                    The backend query for the "orders" table failed: <code className="font-mono text-amber-400 font-bold bg-amber-950/80 px-1 py-0.5 rounded text-[11px]">"{supabaseStatus.error || "relation orders does not exist"}"</code>.<br />
-                    <strong>We have automatically activated the resilient in-memory transaction database sandbox.</strong> All checkout flows, secure signature validations, and real-time streaming will operate perfectly in this session!
-                  </p>
+                </div>
+
+                <div className="flex items-center gap-2 w-full md:w-auto">
                   <button
-                    type="button"
-                    onClick={() => setShowSqlGuide(!showSqlGuide)}
-                    className="mt-3 text-xs text-cyan-300 hover:text-cyan-200 font-extrabold flex items-center gap-1 focus:outline-none cursor-pointer hover:underline"
+                    onClick={() => fetchOrders(adminPassword)}
+                    disabled={loadingOrders}
+                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-lg border border-slate-700 transition-all flex items-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50"
                   >
-                    <span>{showSqlGuide ? "Hide Setup Script" : "Show Copyable Supabase SQL Setup Script"}</span>
+                    <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${loadingOrders ? "animate-spin" : ""}`} />
+                    Manual Sync Log
                   </button>
-                  {showSqlGuide && (
-                    <div className="mt-3.5 p-3.5 bg-slate-950 rounded-lg border border-slate-800 text-left font-mono text-[11px] text-slate-300">
-                      <p className="mb-2 text-slate-400 font-sans font-medium text-[11.5px]">Copy and paste this script directly into your Supabase SQL Editor to initialize the table permanently:</p>
-                      <pre className="bg-slate-900 p-3 rounded font-bold text-indigo-400 border border-slate-850 overflow-x-auto select-all leading-normal">
-{`CREATE TABLE IF NOT EXISTS orders (
-  id BIGINT GENERATED BY DEFAULT AS IDENTITY,
-  custom_order_id TEXT PRIMARY KEY,
-  razorpay_order_id TEXT NOT NULL,
-  customer_name TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  address TEXT NOT NULL,
-  amount NUMERIC NOT NULL,
-  payment_status TEXT NOT NULL DEFAULT 'pending',
-  razorpay_payment_id TEXT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
--- Enable public select, inserts, and updates for the test mode sandbox
-ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
-CREATE POLICY "Allow public select" ON orders FOR SELECT USING (true);
-CREATE POLICY "Allow public insert" ON orders FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow public update" ON orders FOR UPDATE USING (true);`}
-                      </pre>
-                    </div>
-                  )}
+                  <button
+                    onClick={handleAdminLogout}
+                    className="px-4 py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 text-xs font-bold rounded-lg border border-rose-500/20 transition-all flex items-center gap-2 cursor-pointer active:scale-95"
+                  >
+                    <Lock className="w-3.5 h-3.5 text-rose-400" />
+                    Logout Admin
+                  </button>
                 </div>
               </div>
-            </div>
-          )}
 
-          {loadingOrders && orders.length === 0 ? (
-            /* LOADER PANEL */
-            <div className="py-20 text-center">
-              <RefreshCw className="w-8 h-8 animate-spin text-indigo-400 mx-auto mb-2" />
-              <p className="text-slate-400 text-xs text-mono">Streaming records...</p>
-            </div>
-          ) : orders.length === 0 ? (
-            /* EMPTY LOG VIEWER */
-            <div className="py-16 text-center bg-slate-950/40 border border-slate-800/80 rounded-2xl">
-              <Package className="w-12 h-12 text-slate-600 mx-auto mb-2.5" />
-              <h4 className="text-slate-300 font-bold">No test records saved yet</h4>
-              <p className="text-slate-500 text-xs max-w-sm mx-auto mt-1 leading-relaxed">
-                Submit a checkout form and trigger the payment window. Pending orders are pre-saved immediately, and update to "paid" upon verification!
-              </p>
-            </div>
+              {/* RESILIENT DATABASE inspector VIEWS */}
+              {!supabaseStatus.connected && (
+                <div className="bg-amber-950/30 border border-amber-500/20 rounded-xl p-5 mb-8 text-sm text-amber-200">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="flex-grow">
+                      <p className="font-bold text-amber-300 flex items-center gap-1.5 text-base">
+                        <Database className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />
+                        Supabase Table Connection Notice
+                      </p>
+                      <p className="text-xs text-amber-200/80 mt-1 leading-relaxed">
+                        The backend query for the "orders" table failed: <code className="font-mono text-amber-400 font-bold bg-amber-950/80 px-1 py-0.5 rounded text-[11px]">"{supabaseStatus.error || "relation orders does not exist"}"</code>.<br />
+                        <strong>We have automatically activated the resilient in-memory transaction database sandbox.</strong> All checkout flows, secure signature validations, and real-time streaming will operate perfectly in this session!
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => setShowSqlGuide(!showSqlGuide)}
+                        className="mt-3 text-xs text-cyan-300 hover:text-cyan-200 font-extrabold flex items-center gap-1 focus:outline-none cursor-pointer hover:underline"
+                      >
+                        <span>{showSqlGuide ? "Hide Setup Script" : "Show Copyable Supabase SQL Setup Script"}</span>
+                      </button>
+                      {showSqlGuide && (
+                        <div className="mt-3.5 p-3.5 bg-slate-950 rounded-lg border border-slate-800 text-left font-mono text-[11px] text-slate-300">
+                          <p className="mb-2 text-slate-400 font-sans font-medium text-[11.5px]">Copy and paste this script directly into your Supabase SQL Editor to initialize the table permanently:</p>
+                          <pre className="bg-slate-900 p-3 rounded font-bold text-indigo-400 border border-slate-850 overflow-x-auto select-all leading-normal">
+    {`CREATE TABLE IF NOT EXISTS orders (
+      id BIGINT GENERATED BY DEFAULT AS IDENTITY,
+      custom_order_id TEXT PRIMARY KEY,
+      razorpay_order_id TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      address TEXT NOT NULL,
+      amount NUMERIC NOT NULL,
+      payment_status TEXT NOT NULL DEFAULT 'pending',
+      razorpay_payment_id TEXT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    
+    -- Enable public select, inserts, and updates for the test mode sandbox
+    ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+    CREATE POLICY "Allow public select" ON orders FOR SELECT USING (true);
+    CREATE POLICY "Allow public insert" ON orders FOR INSERT WITH CHECK (true);
+    CREATE POLICY "Allow public update" ON orders FOR UPDATE USING (true);`}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {loadingOrders && orders.length === 0 ? (
+                /* LOADER PANEL */
+                <div className="py-20 text-center">
+                  <RefreshCw className="w-8 h-8 animate-spin text-indigo-400 mx-auto mb-2" />
+                  <p className="text-slate-400 text-xs text-mono">Streaming records...</p>
+                </div>
+              ) : orders.length === 0 ? (
+                /* EMPTY LOG VIEWER */
+                <div className="py-16 text-center bg-slate-950/40 border border-slate-800/80 rounded-2xl">
+                  <Package className="w-12 h-12 text-slate-600 mx-auto mb-2.5" />
+                  <h4 className="text-slate-300 font-bold">No test records saved yet</h4>
+                  <p className="text-slate-500 text-xs max-w-sm mx-auto mt-1 leading-relaxed">
+                    Submit a checkout form and trigger the payment window. Pending orders are pre-saved immediately, and update to "paid" upon verification!
+                  </p>
+                </div>
+              ) : (
+                /* LIVE TABLE STREAM GRID */
+                <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="bg-slate-950 text-slate-400 uppercase tracking-wider font-extrabold border-b border-slate-800">
+                        <th className="p-4 font-bold">Custom ID</th>
+                        <th className="p-4 font-bold">Customer Name</th>
+                        <th className="p-4 font-bold">Contact</th>
+                        <th className="p-4 font-bold">Amount</th>
+                        <th className="p-4 font-bold">Status Badge</th>
+                        <th className="p-4 font-bold">Payment Transaction ID</th>
+                        <th className="p-4 font-bold">Razorpay Order Reference</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50 font-mono">
+                      {orders.map((ord, idx) => (
+                        <tr key={ord.custom_order_id + idx} className="hover:bg-slate-900/80 transitional-all">
+                          <td className="p-4 font-bold text-indigo-400">{ord.custom_order_id}</td>
+                          <td className="p-4 text-slate-100 font-sans">{ord.customer_name}</td>
+                          <td className="p-4 text-slate-400 text-[11px]">
+                            <span className="block">{ord.phone}</span>
+                            <span className="block text-[10px] text-slate-500 max-w-xs truncate font-sans">{ord.address}</span>
+                          </td>
+                          <td className="p-4 font-bold text-slate-200">₹{ord.amount}</td>
+                          <td className="p-4">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase ${
+                              ord.payment_status === "paid" 
+                                ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
+                                : ord.payment_status === "failed"
+                                ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
+                                : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                            }`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${
+                                ord.payment_status === "paid" 
+                                  ? "bg-emerald-400" 
+                                  : ord.payment_status === "failed"
+                                  ? "bg-rose-400"
+                                  : "bg-amber-400"
+                              }`}></span>
+                              {ord.payment_status}
+                            </span>
+                          </td>
+                          <td className="p-4 text-slate-400 font-semibold max-w-[150px] truncate">
+                            {ord.razorpay_payment_id ? (
+                              <span className="text-emerald-400/90">{ord.razorpay_payment_id}</span>
+                            ) : (
+                              <span className="text-slate-600 font-normal">N/A (Unpaid)</span>
+                            )}
+                          </td>
+                          <td className="p-4 text-slate-500 text-[10px] max-w-[150px] truncate" title={ord.razorpay_order_id}>
+                            {ord.razorpay_order_id}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
           ) : (
-            /* LIVE TABLE STREAM GRID */
-            <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/50">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="bg-slate-950 text-slate-400 uppercase tracking-wider font-extrabold border-b border-slate-800">
-                    <th className="p-4 font-bold">Custom ID</th>
-                    <th className="p-4 font-bold">Customer Name</th>
-                    <th className="p-4 font-bold">Contact</th>
-                    <th className="p-4 font-bold">Amount</th>
-                    <th className="p-4 font-bold">Status Badge</th>
-                    <th className="p-4 font-bold">Payment Transaction ID</th>
-                    <th className="p-4 font-bold">Razorpay Order Reference</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/50 font-mono">
-                  {orders.map((ord, idx) => (
-                    <tr key={ord.custom_order_id + idx} className="hover:bg-slate-900/80 transitional-all">
-                      <td className="p-4 font-bold text-indigo-400">{ord.custom_order_id}</td>
-                      <td className="p-4 text-slate-100 font-sans">{ord.customer_name}</td>
-                      <td className="p-4 text-slate-400 text-[11px]">
-                        <span className="block">{ord.phone}</span>
-                        <span className="block text-[10px] text-slate-500 max-w-xs truncate font-sans">{ord.address}</span>
-                      </td>
-                      <td className="p-4 font-bold text-slate-200">₹{ord.amount}</td>
-                      <td className="p-4">
-                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wide uppercase ${
-                          ord.payment_status === "paid" 
-                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" 
-                            : ord.payment_status === "failed"
-                            ? "bg-rose-500/10 text-rose-400 border border-rose-500/20"
-                            : "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                        }`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${
-                            ord.payment_status === "paid" 
-                              ? "bg-emerald-400" 
-                              : ord.payment_status === "failed"
-                              ? "bg-rose-400"
-                              : "bg-amber-400"
-                          }`}></span>
-                          {ord.payment_status}
-                        </span>
-                      </td>
-                      <td className="p-4 text-slate-400 font-semibold max-w-[150px] truncate">
-                        {ord.razorpay_payment_id ? (
-                          <span className="text-emerald-400/90">{ord.razorpay_payment_id}</span>
-                        ) : (
-                          <span className="text-slate-600 font-normal">N/A (Unpaid)</span>
-                        )}
-                      </td>
-                      <td className="p-4 text-slate-500 text-[10px] max-w-[150px] truncate" title={ord.razorpay_order_id}>
-                        {ord.razorpay_order_id}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            /* ADMIN LOGIN CARD */
+            <div className="max-w-md mx-auto py-12">
+              <div className="text-center mb-8">
+                <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 mb-3">
+                  <Lock className="w-6 h-6 animate-pulse" />
+                </div>
+                <h3 className="text-xl font-extrabold text-slate-100">Admin Console Gate</h3>
+                <p className="text-xs text-slate-400 mt-2 max-w-sm mx-auto leading-relaxed">
+                  Confidential telemetry logs, transaction signatures, and customer records are secured. Please establish authorization.
+                </p>
+              </div>
+
+              <form onSubmit={handleAdminLogin} className="space-y-4 bg-slate-950 p-6 sm:p-8 rounded-2xl border border-slate-800 shadow-2xl">
+                {loginError && (
+                  <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs rounded-lg flex items-start gap-2 leading-relaxed">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                    <span>{loginError}</span>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                    Admin Username
+                  </label>
+                  <div className="relative">
+                    <span className="absolute inset-y-0 left-0 pl-3 flex items-center text-slate-500 text-xs font-semibold">
+                      admin
+                    </span>
+                    <input
+                      type="text"
+                      value={enteredUsername}
+                      onChange={(e) => setEnteredUsername(e.target.value)}
+                      placeholder="Username (e.g. admin)"
+                      className="w-full pl-16 pr-3 py-2.5 text-sm bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-mono"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                    Access Password
+                  </label>
+                  <input
+                    type="password"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    placeholder="Enter admin password (Default: admin123)"
+                    className="w-full px-3 py-2.5 text-sm bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 transition-all font-mono"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={checkingLogin}
+                  className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 text-slate-100 text-xs font-bold rounded-lg uppercase tracking-wider transition-all shadow-md shadow-indigo-600/10 text-center flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {checkingLogin ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Authenticating...
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      Sign In & Sync Table
+                    </>
+                  )}
+                </button>
+              </form>
             </div>
           )}
 

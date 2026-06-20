@@ -38,17 +38,20 @@ const RAW_RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
 const RAW_RAZORPAY_SECRET = process.env.RAZORPAY_SECRET;
 const RAW_SUPABASE_URL = process.env.SUPABASE_URL;
 const RAW_SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+const RAW_ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 
 console.log("[Elite Log] Raw Environment Variable Statuses:");
 logEnvVarStatus("RAZORPAY_KEY_ID", RAW_RAZORPAY_KEY_ID);
 logEnvVarStatus("RAZORPAY_SECRET", RAW_RAZORPAY_SECRET);
 logEnvVarStatus("SUPABASE_URL", RAW_SUPABASE_URL);
 logEnvVarStatus("SUPABASE_ANON_KEY", RAW_SUPABASE_ANON_KEY);
+logEnvVarStatus("ADMIN_PASSWORD", RAW_ADMIN_PASSWORD);
 
 const RAZORPAY_KEY_ID = cleanEnvVar(RAW_RAZORPAY_KEY_ID) || "rzp_test_T1oVRFtyfopJZm";
 const RAZORPAY_SECRET = cleanEnvVar(RAW_RAZORPAY_SECRET) || "NFWLt1VWGXGhQvExDJi4Ta5G";
 const SUPABASE_URL = cleanEnvVar(RAW_SUPABASE_URL) || "https://irgxpixneqholwwunili.supabase.co";
 const SUPABASE_ANON_KEY = cleanEnvVar(RAW_SUPABASE_ANON_KEY) || "sb_publishable_GsBC4Y_vIckkp9Ko8gYNjw_ESUuE_3U";
+const ADMIN_PASSWORD = cleanEnvVar(RAW_ADMIN_PASSWORD) || "admin123";
 
 console.log("[Elite Log] Initializing Connections in consolidated index.ts...");
 console.log("[Elite Log] Sanitized Supabase URL:", SUPABASE_URL);
@@ -109,7 +112,17 @@ app.get("/api/config", (req, res) => {
 
 // GET ORDERS (Reads live transactions from Supabase database table with in-memory resilient fallback)
 app.get("/api/orders", async (req, res) => {
-  console.log("[Elite Log] GET /api/orders requested. Querying Supabase...");
+  console.log("[Elite Log] GET /api/orders requested. Validating authorization headers...");
+  
+  const authHeader = req.headers.authorization;
+  const expectedHeader = `Bearer ${ADMIN_PASSWORD}`;
+  
+  if (!authHeader || authHeader !== expectedHeader) {
+    console.warn("[Elite Log] Unauthorized try to read orders table.");
+    return res.status(401).json({ error: "Unauthorized access: Admin password authorization is required." });
+  }
+
+  console.log("[Elite Log] Authorization valid. Querying Supabase...");
   let fetchedData: any[] = [];
   let supabaseConnected = true;
   let supabaseError = null;
